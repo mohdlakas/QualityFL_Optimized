@@ -28,10 +28,6 @@ class PUMBFederatedServer:
                                                    gamma=args.quality_gamma,
                                                    baseline_quality=args.quality_baseline)
 
-        #self.quality_calc = QualityMetric()
-        #self.quality_calc = UltraConservativeQualityMetric()
-        #self.quality_calc = StableQualityMetric(args=args)
-
         self.embedding_gen = EmbeddingGenerator(embedding_dim=embedding_dim)
         # Track global direction/state
         self.global_direction = None
