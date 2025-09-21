@@ -176,6 +176,12 @@ class MemoryBank:
             emb = entry['embedding'].reshape(1, -1).astype(np.float32)
             self.index.add(emb)
 
+    def get_recent_qualities(self, client_id, window=3):
+        """Get recent quality scores for a client."""
+        if client_id not in self.client_qualities:
+            return []
+        return self.client_qualities[client_id][-window:]
+
     def get_similar_updates(self, query_embedding, k=5):
         """Search for similar updates using FAISS"""
         if self.index.ntotal == 0:
