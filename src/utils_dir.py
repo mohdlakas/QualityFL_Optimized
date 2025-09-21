@@ -711,33 +711,94 @@ class ComprehensiveAnalyzer:
             self.test_accuracies = []
         self.test_accuracies.append(accuracy)
 
-    def calculate_convergence_metrics(self, target_ratio=0.8):
-        """Calculate convergence speed and stability metrics."""
-        if len(self.train_accuracies) == 0:
+
+    def calculate_convergence_metrics(
+    self, target_ratio=0.8, stability_window=10, smooth_window=1):
+        """
+        Calculate convergence speed and stability metrics for research publication.
+
+        Args:
+            target_ratio (float): Ratio of reference accuracy to define convergence (default=0.8).
+            stability_window (int): Window size (last N rounds) for stability metrics.
+            smooth_window (int): Moving average window for smoothing accuracy curves (default=1 = no smoothing).
+
+        Returns:
+            dict with convergence metrics.
+        """
+
+        # --- Select accuracy source ---
+        if hasattr(self, 'test_accuracies') and self.test_accuracies:
+            accuracies = [acc for _, acc in self.test_accuracies]
+            accuracy_source = "test"
+        elif getattr(self, 'train_accuracies', []):
+            accuracies = self.train_accuracies
+            accuracy_source = "training"
+            print("⚠️ Warning: Using training accuracy for convergence (test accuracy not available)")
+        else:
             return {}
-            
-        self.final_accuracy = self.train_accuracies[-1]
-        target_accuracy = target_ratio * self.final_accuracy
-        
-        # Find convergence round (first round to reach target)
-        for i, acc in enumerate(self.train_accuracies):
-            if acc >= target_accuracy:
-                self.convergence_round = i + 1
-                break
-                
-        # Training stability (std of last 10 rounds)
-        stability_window = min(10, len(self.train_accuracies))
-        last_accuracies = self.train_accuracies[-stability_window:]
-        training_stability = np.std(last_accuracies)
-        
+
+        # --- Optional smoothing ---
+        if smooth_window > 1 and len(accuracies) >= smooth_window:
+            smoothed = []
+            for i in range(len(accuracies)):
+                start = max(0, i - smooth_window + 1)
+                smoothed.append(np.mean(accuracies[start:i+1]))
+            accuracies = smoothed
+
+        # --- Reference accuracies ---
+        self.final_accuracy = accuracies[-1]
+        best_accuracy = max(accuracies)
+
+        target_final = target_ratio * self.final_accuracy
+        target_best = target_ratio * best_accuracy
+
+        # --- Convergence rounds ---
+        conv_round_final = next((i+1 for i, acc in enumerate(accuracies) if acc >= target_final), None)
+        conv_round_best  = next((i+1 for i, acc in enumerate(accuracies) if acc >= target_best), None)
+
+        # --- Time-to-target (if round_times logged) ---
+        time_to_final = None
+        time_to_best = None
+        if hasattr(self, "round_times") and self.round_times:
+            cumulative_times = np.cumsum(self.round_times)
+            if conv_round_final is not None and conv_round_final-1 < len(cumulative_times):
+                time_to_final = cumulative_times[conv_round_final-1]
+            if conv_round_best is not None and conv_round_best-1 < len(cumulative_times):
+                time_to_best = cumulative_times[conv_round_best-1]
+
+        # --- Stability metrics ---
+        window = min(stability_window, len(accuracies))
+        last_accuracies = accuracies[-window:]
+        accuracy_stability = np.std(last_accuracies)
+        accuracy_range = np.max(last_accuracies) - np.min(last_accuracies)
+        mean_last = np.mean(last_accuracies)
+
         return {
+            # References
             'final_accuracy': self.final_accuracy,
-            'convergence_round': self.convergence_round or len(self.train_accuracies),
-            'training_stability': training_stability,
-            'convergence_target': target_accuracy,
-            'target_ratio': target_ratio
+            'best_accuracy': best_accuracy,
+            'target_ratio': target_ratio,
+            'accuracy_source': accuracy_source,
+            'total_rounds_analyzed': len(accuracies),
+
+            # Convergence speed
+            'convergence_round_final': conv_round_final,
+            'convergence_round_best': conv_round_best,
+
+            # Time-to-target
+            'time_to_final': time_to_final,
+            'time_to_best': time_to_best,
+
+            # Stability
+            'accuracy_stability_std': accuracy_stability,
+            'accuracy_stability_range': accuracy_range,
+            'mean_last': mean_last,
+
+            # Targets
+            'convergence_target_final': target_final,
+            'convergence_target_best': target_best,
         }
-    
+
     def analyze_client_selection_quality(self):
         """Analyze client selection patterns and quality."""
         if not self.client_selections:
@@ -967,14 +1028,13 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
             f.write(f"{key.replace('_', ' ').title()}: {value}\n")
         f.write("\n")
         
-        # 🆕 ADD QUALITY METRIC PARAMETERS SECTION
+        # Quality Metric Parameters Section
         f.write("QUALITY METRIC PARAMETERS:\n")
         f.write("-" * 40 + "\n")
         quality_config = report.get('quality_metric_config', {})
         f.write(f"Alpha (Loss Weight): {quality_config.get('alpha_loss_weight', 'NA')}\n")
         f.write(f"Beta (Consistency Weight): {quality_config.get('beta_consistency_weight', 'NA')}\n")
         f.write(f"Gamma (Data Weight): {quality_config.get('gamma_data_weight', 'NA')}\n")
-        # ADD: Baseline quality parameter
         if hasattr(args, 'quality_baseline'):
             f.write(f"Baseline Quality: {args.quality_baseline}\n")
         elif hasattr(args, 'baseline_quality'):
@@ -983,23 +1043,68 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
         f.write("Note: α controls loss-based quality, β controls consistency, γ controls data quantity influence.\n")
         f.write("\n")
         
-        # 1. Performance Comparison (Core Evidence)
-        f.write("1. PERFORMANCE COMPARISON (CORE EVIDENCE):\n")
+        # 1. Performance Comparison (Core Evidence) - UPDATED
+        f.write("1. PERFORMANCE COMPARISON (PUBLICATION-READY):\n")
         f.write("-" * 50 + "\n")
         perf = report['performance_metrics']
         f.write(f"Final Test Accuracy: {perf['test_accuracy']:.4f} ({perf['test_accuracy']*100:.2f}%)\n")
         
-        # FIX: Safe access to convergence metrics
-        if 'convergence_round' in perf and 'target_ratio' in perf:
-            f.write(f"Convergence Speed: {perf['convergence_round']} rounds to reach {perf['target_ratio']*100:.0f}% of final accuracy\n")
+        # Enhanced convergence metrics display
+        if 'convergence_round_final' in perf:
+            f.write(f"Best Accuracy Achieved: {perf.get('best_accuracy', 'N/A'):.4f}\n")
+            f.write(f"Accuracy Source: {perf.get('accuracy_source', 'Unknown')}\n")
+            f.write("\nConvergence Speed Analysis:\n")
+            
+            conv_final = perf.get('convergence_round_final')
+            conv_best = perf.get('convergence_round_best')
+            target_ratio = perf.get('target_ratio', 0.8)
+            
+            if conv_final:
+                f.write(f"  Rounds to {target_ratio*100:.0f}% of final accuracy: {conv_final}\n")
+            else:
+                f.write(f"  Did not reach {target_ratio*100:.0f}% of final accuracy\n")
+                
+            if conv_best:
+                f.write(f"  Rounds to {target_ratio*100:.0f}% of best accuracy: {conv_best}\n")
+            else:
+                f.write(f"  Did not reach {target_ratio*100:.0f}% of best accuracy\n")
+            
+            # Time-to-target metrics
+            time_final = perf.get('time_to_final')
+            time_best = perf.get('time_to_best')
+            if time_final is not None:
+                f.write(f"  Time to {target_ratio*100:.0f}% final: {time_final:.2f}s\n")
+            if time_best is not None:
+                f.write(f"  Time to {target_ratio*100:.0f}% best: {time_best:.2f}s\n")
+                
         else:
-            f.write("Convergence Speed: Not calculated (insufficient convergence data)\n")
+            f.write("Convergence Analysis: Insufficient data\n")
         
-        f.write(f"Training Stability: {perf.get('training_stability', 0.0):.6f} (std of last 10 rounds)\n")
+        # Enhanced stability metrics
+        f.write("\nStability Analysis:\n")
+        stability_std = perf.get('accuracy_stability_std', 0.0)
+        stability_range = perf.get('accuracy_stability_range', 0.0)
+        mean_last = perf.get('mean_last', 0.0)
+        
+        f.write(f"  Last 10 rounds mean accuracy: {mean_last:.4f}\n")
+        f.write(f"  Stability (σ): {stability_std:.6f}\n")
+        f.write(f"  Stability (range): {stability_range:.6f}\n")
+        
+        # Performance assessment
+        if stability_std < 0.001:
+            f.write("  → Excellent stability (σ < 0.001)\n")
+        elif stability_std < 0.005:
+            f.write("  → Good stability (σ < 0.005)\n")
+        elif stability_std < 0.01:
+            f.write("  → Moderate stability (σ < 0.01)\n")
+        else:
+            f.write("  → Poor stability (σ ≥ 0.01)\n")
+            
         f.write(f"Total Accuracy Improvement: {perf.get('accuracy_improvement', 0.0):.4f}\n")
         f.write(f"Average Round Time: {perf.get('avg_round_time', 0.0):.2f} seconds\n")
         f.write("\n")
         
+        # Rest of the method remains the same...
         # 2. Client Selection Quality Analysis
         f.write("2. CLIENT SELECTION QUALITY ANALYSIS:\n")
         f.write("-" * 50 + "\n")
@@ -1020,7 +1125,7 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
             f.write(f"  Min Quality: {quality.get('min', 0.0):.4f}\n")
             f.write(f"  Max Quality: {quality.get('max', 0.0):.4f}\n")
             
-            # 🆕 ADD QUALITY METRIC INTERPRETATION
+            # Quality metric interpretation
             f.write("\nQuality Metric Interpretation:\n")
             alpha = quality_config.get('alpha_loss_weight', 0.3)
             beta = quality_config.get('beta_consistency_weight', 0.2)
@@ -1034,12 +1139,12 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
             f.write("Client Selection Analysis: No data available\n")
         f.write("\n")
         
+        # Continue with remaining sections...
         # 3. Memory Bank Effectiveness
         f.write("3. MEMORY BANK EFFECTIVENESS:\n")
         f.write("-" * 50 + "\n")
         memory = report.get('memory_bank_analysis', {})
         
-        # Check if memory bank data exists (PUMB only)
         if memory and 'initial_memory_size' in memory:
             f.write(f"Initial Memory Size: {memory['initial_memory_size']}\n")
             f.write(f"Final Memory Size: {memory['final_memory_size']}\n")
@@ -1049,7 +1154,6 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
             f.write(f"Ranking Stability: {memory['ranking_stability']:.4f} (correlation)\n")
             f.write(f"Rounds Tracked: {memory['total_rounds_tracked']}\n")
             
-            # 🆕 ADD MEMORY BANK INTERPRETATION
             f.write("\nMemory Bank Interpretation:\n")
             if memory['avg_similarity_score'] > 0.7:
                 f.write("  High similarity scores indicate effective parameter update learning\n")
@@ -1076,7 +1180,6 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
         f.write(f"Rounds with Weight Data: {agg.get('num_rounds_tracked', 0)}\n")
         f.write(f"Average Weight Standard Deviation: {agg.get('avg_weight_std', 0.0):.6f}\n")
         
-        # 🆕 ADD WEIGHT ANALYSIS INTERPRETATION
         if agg.get('avg_weight_std', 0) > 0:
             if agg['avg_weight_std'] > 0.1:
                 f.write("  High weight variance indicates strong client quality differentiation\n")
@@ -1086,11 +1189,10 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
                 f.write("  Low weight variance suggests near-uniform client treatment\n")
         f.write("\n")
         
-        # 🆕 ADD PUMB ALGORITHM EFFECTIVENESS SUMMARY
+        # 5. PUMB Algorithm Effectiveness Summary
         f.write("5. PUMB ALGORITHM EFFECTIVENESS SUMMARY:\n")
         f.write("-" * 50 + "\n")
         
-        # Summarize key insights
         has_memory_data = memory and 'initial_memory_size' in memory
         has_quality_data = client and client.get('quality_score_stats', {}).get('mean', 0) > 0
         
@@ -1100,9 +1202,8 @@ def write_comprehensive_analysis(analyzer, args, test_acc, total_time, filename,
             f.write("✓ Quality-based client selection with α/β/γ weighting\n")
             f.write("✓ Intelligent aggregation based on client reliability\n")
             
-            # Performance assessment
             final_acc = perf['test_accuracy']
-            if final_acc > 0.5:  # Assuming normalized accuracy
+            if final_acc > 0.5:
                 f.write(f"✓ Strong performance: {final_acc*100:.2f}% test accuracy\n")
             elif final_acc > 0.3:
                 f.write(f"○ Moderate performance: {final_acc*100:.2f}% test accuracy\n")
@@ -1150,18 +1251,63 @@ def write_fedavg_comprehensive_analysis(analyzer, args, test_acc, total_time, fi
             f.write(f"{key.replace('_', ' ').title()}: {value}\n")
         f.write("\n")
         
-        # 1. Performance Comparison (Core Evidence)
-        f.write("1. PERFORMANCE COMPARISON (CORE EVIDENCE):\n")
+        # 1. Performance Comparison (Core Evidence) - UPDATED
+        f.write("1. PERFORMANCE COMPARISON (PUBLICATION-READY):\n")
         f.write("-" * 50 + "\n")
         perf = report['performance_metrics']
         f.write(f"Final Test Accuracy: {perf['test_accuracy']:.4f} ({perf['test_accuracy']*100:.2f}%)\n")
         
-        if 'convergence_round' in perf and 'target_ratio' in perf:
-            f.write(f"Convergence Speed: {perf['convergence_round']} rounds to reach {perf['target_ratio']*100:.0f}% of final accuracy\n")
+        # Enhanced convergence metrics display for FedAvg
+        if 'convergence_round_final' in perf:
+            f.write(f"Best Accuracy Achieved: {perf.get('best_accuracy', 'N/A'):.4f}\n")
+            f.write(f"Accuracy Source: {perf.get('accuracy_source', 'Unknown')}\n")
+            f.write("\nConvergence Speed Analysis:\n")
+            
+            conv_final = perf.get('convergence_round_final')
+            conv_best = perf.get('convergence_round_best')
+            target_ratio = perf.get('target_ratio', 0.8)
+            
+            if conv_final:
+                f.write(f"  Rounds to {target_ratio*100:.0f}% of final accuracy: {conv_final}\n")
+            else:
+                f.write(f"  Did not reach {target_ratio*100:.0f}% of final accuracy\n")
+                
+            if conv_best:
+                f.write(f"  Rounds to {target_ratio*100:.0f}% of best accuracy: {conv_best}\n")
+            else:
+                f.write(f"  Did not reach {target_ratio*100:.0f}% of best accuracy\n")
+            
+            # Time-to-target metrics
+            time_final = perf.get('time_to_final')
+            time_best = perf.get('time_to_best')
+            if time_final is not None:
+                f.write(f"  Time to {target_ratio*100:.0f}% final: {time_final:.2f}s\n")
+            if time_best is not None:
+                f.write(f"  Time to {target_ratio*100:.0f}% best: {time_best:.2f}s\n")
+                
         else:
-            f.write("Convergence Speed: Not calculated (insufficient convergence data)\n")
+            f.write("Convergence Analysis: Insufficient convergence data\n")
         
-        f.write(f"Training Stability: {perf.get('training_stability', 0.0):.6f} (std of last 10 rounds)\n")
+        # Enhanced stability metrics for FedAvg
+        f.write("\nStability Analysis:\n")
+        stability_std = perf.get('accuracy_stability_std', 0.0)
+        stability_range = perf.get('accuracy_stability_range', 0.0)
+        mean_last = perf.get('mean_last', 0.0)
+        
+        f.write(f"  Last 10 rounds mean accuracy: {mean_last:.4f}\n")
+        f.write(f"  Stability (σ): {stability_std:.6f}\n")
+        f.write(f"  Stability (range): {stability_range:.6f}\n")
+        
+        # Performance assessment
+        if stability_std < 0.001:
+            f.write("  → Excellent stability (σ < 0.001)\n")
+        elif stability_std < 0.005:
+            f.write("  → Good stability (σ < 0.005)\n")
+        elif stability_std < 0.01:
+            f.write("  → Moderate stability (σ < 0.01)\n")
+        else:
+            f.write("  → Poor stability (σ ≥ 0.01)\n")
+            
         f.write(f"Total Accuracy Improvement: {perf.get('accuracy_improvement', 0.0):.4f}\n")
         f.write(f"Average Round Time: {perf.get('avg_round_time', 0.0):.2f} seconds\n")
         f.write("\n")
@@ -1266,7 +1412,7 @@ def aggregate_multiple_runs(reports_list, output_filename):
 
 def write_scaffold_comprehensive_analysis(analyzer, args, final_test_acc, total_time, filename, experiment_seed=None):
     """
-    Generate comprehensive analysis report for SCAFFOLD federated learning
+    Generate comprehensive analysis report for SCAFFOLD federated learning - UPDATED
     """
     with open(filename, 'w') as f:
         f.write("="*80 + "\n")
@@ -1294,22 +1440,65 @@ def write_scaffold_comprehensive_analysis(analyzer, args, final_test_acc, total_
         f.write(f"SCAFFOLD Step Size: {getattr(args, 'scaffold_stepsize', 1.0)}\n")
         f.write("\n")
         
-        # Performance Metrics
-        f.write("PERFORMANCE METRICS\n")
+        # Performance Metrics - UPDATED
+        f.write("PERFORMANCE METRICS (PUBLICATION-READY)\n")
         f.write("-" * 40 + "\n")
         f.write(f"Final Test Accuracy: {final_test_acc:.4f} ({final_test_acc*100:.2f}%)\n")
         f.write(f"Total Training Time: {total_time:.2f} seconds\n")
         f.write(f"Average Time per Round: {total_time/args.epochs:.2f} seconds\n")
         f.write("\n")
         
-        # Convergence Analysis
+        # Convergence Analysis - UPDATED
         convergence_metrics = analyzer.calculate_convergence_metrics()
-        f.write("CONVERGENCE ANALYSIS\n")
+        f.write("CONVERGENCE ANALYSIS (ENHANCED)\n")
         f.write("-" * 40 + "\n")
-        f.write(f"Convergence Round: {convergence_metrics.get('convergence_round', 'N/A')}\n")
-        f.write(f"Training Stability: {convergence_metrics.get('training_stability', 0):.6f}\n")
-        f.write(f"Final Training Accuracy: {convergence_metrics.get('final_train_acc', 0)*100:.2f}%\n")
-        f.write(f"Training Loss Reduction: {convergence_metrics.get('loss_reduction', 0):.4f}\n")
+        
+        if convergence_metrics:
+            f.write(f"Accuracy Source: {convergence_metrics.get('accuracy_source', 'Unknown')}\n")
+            f.write(f"Best Accuracy Achieved: {convergence_metrics.get('best_accuracy', 'N/A'):.4f}\n")
+            f.write(f"Final Accuracy: {convergence_metrics.get('final_accuracy', 'N/A'):.4f}\n")
+            
+            conv_final = convergence_metrics.get('convergence_round_final')
+            conv_best = convergence_metrics.get('convergence_round_best')
+            target_ratio = convergence_metrics.get('target_ratio', 0.8)
+            
+            f.write(f"\nConvergence Speed (to {target_ratio*100:.0f}% target):\n")
+            if conv_final:
+                f.write(f"  Rounds to final target: {conv_final}\n")
+            else:
+                f.write(f"  Did not reach final target\n")
+                
+            if conv_best:
+                f.write(f"  Rounds to best target: {conv_best}\n")
+            else:
+                f.write(f"  Did not reach best target\n")
+            
+            # Time-to-target
+            time_final = convergence_metrics.get('time_to_final')
+            time_best = convergence_metrics.get('time_to_best')
+            if time_final is not None:
+                f.write(f"  Time to final target: {time_final:.2f}s\n")
+            if time_best is not None:
+                f.write(f"  Time to best target: {time_best:.2f}s\n")
+            
+            # Stability metrics
+            f.write(f"\nStability Analysis:\n")
+            stability_std = convergence_metrics.get('accuracy_stability_std', 0.0)
+            stability_range = convergence_metrics.get('accuracy_stability_range', 0.0)
+            mean_last = convergence_metrics.get('mean_last', 0.0)
+            
+            f.write(f"  Last rounds mean: {mean_last:.4f}\n")
+            f.write(f"  Stability (σ): {stability_std:.6f}\n")
+            f.write(f"  Stability (range): {stability_range:.6f}\n")
+            
+            if stability_std < 0.001:
+                f.write("  → Excellent stability\n")
+            elif stability_std < 0.005:
+                f.write("  → Good stability\n")
+            else:
+                f.write("  → Moderate/Poor stability\n")
+        else:
+            f.write("Convergence Analysis: Insufficient data\n")
         f.write("\n")
         
         # Client Selection Analysis
@@ -1381,4 +1570,6 @@ def write_scaffold_comprehensive_analysis(analyzer, args, final_test_acc, total_
         f.write("="*80 + "\n")
         f.write("END OF SCAFFOLD COMPREHENSIVE ANALYSIS\n")
         f.write("="*80 + "\n")
+
+
 
