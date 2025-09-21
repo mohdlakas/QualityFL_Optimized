@@ -18,8 +18,6 @@ from federated_PUMB import PUMBFederatedServer
 from utils_dir import (get_dataset, exp_details, plot_data_distribution,
                       ComprehensiveAnalyzer, write_comprehensive_analysis, check_gpu_pytorch, set_seed)
 
-from datetime import datetime
-
 current_dir = os.getcwd()
 if 'Algorithms' in current_dir or 'algorithms' in current_dir:
     save_base = '../../save'  # From src/Algorithms to project root
@@ -496,8 +494,8 @@ if __name__ == '__main__':
     
     print(f"\n🔍 QUICK RESULTS SUMMARY:")
     print(f"   Final Test Accuracy: {test_acc:.4f} ({test_acc*100:.2f}%)")
-    print(f"   Convergence Speed: {convergence_metrics.get('convergence_round', 'N/A')} rounds")
-    print(f"   Training Stability: {convergence_metrics.get('training_stability', 0):.6f}")
+    print(f"   Convergence Speed: {convergence_metrics.get('convergence_round_final', 'N/A')} rounds")
+    print(f"   Training Stability: {convergence_metrics.get('accuracy_stability_std', 0):.6f}")
     print(f"   Unique Clients Selected: {client_analysis.get('total_unique_clients', 0)}")
     print(f"   Memory Bank Final Size: {memory_analysis.get('final_memory_size', 0)}")
     print(f"   Avg Client Reliability Improvement: {client_analysis.get('avg_reliability_improvement', 0):.4f}")
