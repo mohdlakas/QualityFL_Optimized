@@ -171,40 +171,19 @@ class QualityMetric:
 class GenerousQualityMetric(QualityMetric):
     """Exploration-friendly quality metric with higher baseline scores"""
     
-    def __init__(self, alpha=0.6, beta=0.2, gamma=0.2, baseline_quality=0.6): 
+    def __init__(self, alpha=0.6, beta=0.2, gamma=0.2, baseline_quality=0.1): 
         super().__init__(alpha, beta, gamma, baseline_quality)
-        self.baseline_quality = baseline_quality
-
-        # Set up logging
-        from datetime import datetime
-        import os
-        
-        log_dir = '../save/logs'
-        os.makedirs(log_dir, exist_ok=True)
-        
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_file = f'{log_dir}/generous_quality_{timestamp}.log'
-        
-        # Check if file handler already exists
-        has_file_handler = any(isinstance(h, logging.FileHandler) for h in self.logger.handlers)
-        
-        if not has_file_handler:
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-            self.logger.addHandler(file_handler)
-            self.logger.setLevel(logging.INFO)
-            
-            self.logger.info("=== GENEROUS QUALITY METRIC INITIALIZED ===")
-            self.logger.info(f"Weights: alpha={alpha}, beta={beta}, gamma={gamma}")
-            self.logger.info(f"Baseline quality: {self.baseline_quality}")
+        #self.baseline_quality = baseline_quality
             
         # Track quality statistics
         self.quality_history = []
         self.client_selections = {}
         
     def calculate_quality(self, loss_before, loss_after, data_sizes, param_update, 
-                         round_num, client_id, all_loss_improvements=None):
-        """Calculate generous quality score"""
+                    round_num, client_id, all_loss_improvements=None):
+        """
+        CORRECTED: Baseline quality properly enforced as true minimum
+        """
         base_quality = super().calculate_quality(
             loss_before, loss_after, data_sizes, param_update,
             round_num, client_id, all_loss_improvements
@@ -220,31 +199,25 @@ class GenerousQualityMetric(QualityMetric):
             self.client_selections[client_id] = 0
         self.client_selections[client_id] += 1
         
-        # Bonus for underused clients
         avg_selections = np.mean(list(self.client_selections.values())) if self.client_selections else 1
         client_usage = self.client_selections[client_id]
         diversity_bonus = max(0, 0.1 * (avg_selections - client_usage) / avg_selections)
         
-        # Generous quality calculation
-        generous_quality = max(
-            self.baseline_quality,
-            base_quality + exploration_bonus + diversity_bonus
-        )
+        # CORRECTED APPROACH: Baseline as true floor
+        # Only improvements above baseline get bonuses
+        excess_quality = max(0, base_quality - self.baseline_quality)
+        bonused_excess = excess_quality + exploration_bonus + diversity_bonus
         
-        # Track statistics
+        # Final = baseline + bonused excess
+        generous_quality = self.baseline_quality + bonused_excess
+        
+        # DEBUG: Print for verification
+        if round_num <= 3:
+            print(f"🔍 R{round_num} C{client_id}: baseline={self.baseline_quality:.3f}, "
+                f"base={base_quality:.3f}, excess={excess_quality:.3f}, "
+                f"bonuses={exploration_bonus + diversity_bonus:.3f}, final={generous_quality:.3f}")
+        
         self.quality_history.append(generous_quality)
         
-        # Log statistics every 5 rounds
-        if round_num % 5 == 0 and len(self.quality_history) > 10:
-            recent_qualities = self.quality_history[-50:]
-            mean_q = np.mean(recent_qualities)
-            std_q = np.std(recent_qualities)
-            
-            self.logger.info(f"=== QUALITY STATS ROUND {round_num} ===")
-            self.logger.info(f"Recent qualities: mean={mean_q:.4f}, std={std_q:.4f}")
-            self.logger.info(f"Client selections: {len(self.client_selections)} unique clients")
-            
-            if round_num > 10 and mean_q < 0.5:
-                self.logger.warning(f"LOW QUALITY SCORES DETECTED! Mean quality {mean_q:.4f}")
-                
+        # YES, return with cap at 1.0
         return min(1.0, generous_quality)
