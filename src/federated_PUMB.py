@@ -2,50 +2,53 @@
 import torch
 import numpy as np
 import logging
-from memory_bank import MemoryBank
-from intelligent_selector import IntelligentSelector
-from embedding_generator import EmbeddingGenerator
-from quality_metric import QualityMetric, GenerousQualityMetric, StableQualityMetric
+from memory_bank_o import MemoryBank
+from intelligent_selector_o import IntelligentSelector
+from embedding_generator_o import EmbeddingGenerator
+from quality_metric_o import QualityMetric, GenerousQualityMetric
 
 class PUMBFederatedServer:
     def __init__(self, model, optimizer, loss_fn, args, embedding_dim=512):
         """Initialize enhanced federated server with PUMB."""
-        """FIXED: Accept args to access pumb_alpha and other parameters."""
         self.model = model
         self.optimizer = optimizer
         self.loss_fn = loss_fn
-        self.args = args  # Store args for later use
+        self.args = args
         
         # Initialize PUMB components
         self.memory_bank = MemoryBank(embedding_dim=embedding_dim)
         self.client_selector = IntelligentSelector(
             self.memory_bank,
-            args=args  # Pass args object directly
+            args=args
         )
 
-        self.quality_calc = GenerousQualityMetric(alpha=args.quality_alpha,
-                                                   beta=args.quality_beta,
-                                                   gamma=args.quality_gamma,
-                                                   baseline_quality=args.quality_baseline)
-
-        #self.quality_calc = QualityMetric()
-        #self.quality_calc = UltraConservativeQualityMetric()
-        #self.quality_calc = StableQualityMetric(args=args)
+        # FIX: Use args.quality_baseline parameter
+        self.quality_calc = GenerousQualityMetric(
+            alpha=args.quality_alpha,
+            beta=args.quality_beta,
+            gamma=args.quality_gamma,
+            baseline_quality=args.quality_baseline  # This was missing the args reference
+        )
 
         self.embedding_gen = EmbeddingGenerator(embedding_dim=embedding_dim)
+        
         # Track global direction/state
         self.global_direction = None
         self.prev_model_state = None
         self.current_round = 0
 
-        # 🆕 STORE ACTUAL VALUES FOR TRACKING
+        # Store actual configuration for verification
         self.actual_config = {
             'pumb_exploration_ratio': self.client_selector.exploration_ratio,
             'pumb_initial_rounds': self.client_selector.initial_rounds,
             'quality_metric_type': type(self.quality_calc).__name__,
+            'quality_baseline': self.quality_calc.baseline_quality,  # Add this for verification
             'embedding_dim': embedding_dim,
             'memory_bank_size_limit': getattr(self.memory_bank, 'max_size', 'Unlimited')
         }
+        
+        # Add verification print
+        print(f"🎯 PUMB Server initialized with baseline_quality: {self.quality_calc.baseline_quality}")
 
     def get_actual_config(self):
         """Return the actual configuration values being used."""
