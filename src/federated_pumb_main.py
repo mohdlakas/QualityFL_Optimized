@@ -11,12 +11,14 @@ import logging
 matplotlib.use('Agg')
 
 from options import args_parser
-from update import LocalUpdate, test_inference
+from update_o import LocalUpdate, test_inference
 from models import CNNCifar, CNNCifar100, CNNFemnist
 
-from federated_PUMB import PUMBFederatedServer
+from federated_PUMB_o import PUMBFederatedServer
 from utils_dir import (get_dataset, exp_details, plot_data_distribution,
                       ComprehensiveAnalyzer, write_comprehensive_analysis, check_gpu_pytorch, set_seed)
+
+from datetime import datetime
 
 current_dir = os.getcwd()
 if 'Algorithms' in current_dir or 'algorithms' in current_dir:
@@ -167,8 +169,32 @@ if __name__ == '__main__':
         print(f"PUMB Server using SGD optimizer with lr={args.lr}")
     #loss_fn = torch.nn.CrossEntropyLoss()
     loss_fn = torch.nn.NLLLoss()
+
     # Initialize PUMB server
     server = PUMBFederatedServer(global_model, optimizer, loss_fn, args, embedding_dim=512)
+
+    # FIX 3: PARAMETER VERIFICATION - Add this right after server initialization
+    print(f"\n🔍 PARAMETER VERIFICATION:")
+    print(f"   Command line args.quality_baseline: {args.quality_baseline}")
+    print(f"   Server quality_calc.baseline_quality: {server.quality_calc.baseline_quality}")
+    print(f"   Quality metric type: {type(server.quality_calc).__name__}")
+    print(f"   Quality alpha (α): {server.quality_calc.alpha}")
+    print(f"   Quality beta (β): {server.quality_calc.beta}")
+    print(f"   Quality gamma (γ): {server.quality_calc.gamma}")
+
+    # Verify that the baseline quality is actually being used
+    if hasattr(server.quality_calc, 'baseline_quality'):
+        if abs(args.quality_baseline - server.quality_calc.baseline_quality) > 1e-6:
+            print(f"⚠️  WARNING: Baseline quality mismatch!")
+            print(f"   Expected: {args.quality_baseline}")
+            print(f"   Actually used: {server.quality_calc.baseline_quality}")
+            # Fix the mismatch if detected
+            server.quality_calc.baseline_quality = args.quality_baseline
+            print(f"✅ Fixed: Set baseline_quality to {args.quality_baseline}")
+        else:
+            print(f"✅ Baseline quality correctly set to: {args.quality_baseline}")
+    else:
+        print(f"⚠️  WARNING: Server quality metric has no baseline_quality attribute!")
 
     # NEW: Store quality metric info in args for dynamic exp_details
     quality_metric = server.quality_calc
@@ -176,7 +202,7 @@ if __name__ == '__main__':
     args.quality_alpha = quality_metric.alpha
     args.quality_beta = quality_metric.beta
     args.quality_gamma = quality_metric.gamma
-    
+
     # ADD: Store baseline quality if it exists
     if hasattr(quality_metric, 'baseline_quality'):
         args.quality_baseline = quality_metric.baseline_quality
@@ -287,6 +313,31 @@ if __name__ == '__main__':
                 )
                 client_qualities[idx] = quality
 
+        # DEBUGGING: Check quality values for first few rounds
+        if epoch < 5:  # Debug first 5 rounds
+            print(f"\n=== ROUND {epoch} QUALITY DEBUG ===")
+            print(f"Baseline quality setting: {server.quality_calc.baseline_quality}")
+            
+            quality_stats = {
+                'min': min(client_qualities.values()),
+                'max': max(client_qualities.values()),
+                'mean': np.mean(list(client_qualities.values())),
+                'std': np.std(list(client_qualities.values()))
+            }
+            
+            print(f"Quality scores stats: {quality_stats}")
+            print(f"Individual client qualities: {[(cid, f'{q:.3f}') for cid, q in client_qualities.items()]}")
+            
+            # Check if any quality is below baseline
+            below_baseline = [cid for cid, q in client_qualities.items() if q < server.quality_calc.baseline_quality]
+            if below_baseline:
+                print(f"⚠️  Clients below baseline ({server.quality_calc.baseline_quality}): {below_baseline}")
+            else:
+                print(f"✅ All clients above baseline ({server.quality_calc.baseline_quality})")
+            
+            # Show loss improvements for context
+            print(f"Loss improvements: {[(cid, f'{client_losses[cid][0] - client_losses[cid][1]:.4f}') for cid in selected_clients]}")
+
         # ===== OPTIMIZATION 3: EFFICIENT MEMORY BANK UPDATE =====
         for idx in selected_clients:
             # Use pre-computed embedding if available
@@ -313,6 +364,19 @@ if __name__ == '__main__':
             server.global_direction, server.embedding_gen,
             server.quality_calc, epoch
         )
+
+        # DEBUGGING: Check aggregation weights for first few rounds
+        if epoch < 3:  # Debug first 3 rounds
+            print(f"\n=== ROUND {epoch} AGGREGATION WEIGHTS DEBUG ===")
+            for client_id in selected_clients:
+                weight = aggregation_weights[client_id]
+                quality = client_qualities[client_id] 
+                reliability = server.memory_bank.get_client_reliability(client_id)
+                print(f"Client {client_id}: quality={quality:.3f}, reliability={reliability:.3f}, weight={weight:.3f}")
+            
+            weight_std = np.std(list(aggregation_weights.values()))
+            print(f"Weight std: {weight_std:.4f} (higher = more differentiation)")
+            print(f"Weight sum: {sum(aggregation_weights.values()):.6f} (should be ~1.0)")
 
         # ===== OPTIMIZATION 4: VECTORIZED SIMILARITY CALCULATION =====
         similarities = []
